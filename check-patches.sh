@@ -13,11 +13,12 @@ fi
 VERSION=$(grep -o '"version":"[^"]*"' "$(dirname "$MEMORY")/../../package.json" 2>/dev/null | cut -d'"' -f4)
 COMMANDS_DIR=$(dirname "$SERVICES")/../commands
 
-# Quick check: Patch 8 (config-driven) + Patch 5 (CPU load) + Patch 11 (preload) + Patch 13 (ultralearn)
+# Quick check: Patch 8 (config-driven) + Patch 5 (CPU load) + Patch 11 (preload) + Patch 13 (ultralearn) + Patch 18 (neural init)
 if grep -q "embeddings.json" "$MEMORY" 2>/dev/null \
    && grep -q "maxCpuLoad:" "$SERVICES" 2>/dev/null \
    && grep -q "loadEmbeddingModel" "$SERVICES" 2>/dev/null \
-   && grep -q "applyTemporalDecay" "$SERVICES" 2>/dev/null; then
+   && grep -q "applyTemporalDecay" "$SERVICES" 2>/dev/null \
+   && grep -q "getHNSWIndex" "$COMMANDS_DIR/neural.js" 2>/dev/null; then
   echo "[PATCHES] OK: All patches verified (v$VERSION)"
   exit 0
 fi

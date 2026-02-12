@@ -885,3 +885,47 @@ npx @claude-flow/cli@latest hooks intelligence stats
 **Note:** This patch requires more complex multi-line replacement for the performance section. The sed commands handle the simple single-line fixes. The performance section may need manual editing or a more sophisticated script.
 
 ---
+
+## Patch 18: `neural status` initializes WASM/SONA/HNSW before checking
+
+**File:** `commands/neural.js`
+**Severity:** Low (cosmetic — components work fine, just show as "Not loaded")
+**Issue:** `neural status` reads module-level flags (`initialized`, `sonaAvailable`, `hnswIndex`) without calling their init functions, so RuVector WASM, SONA Engine, and HNSW Index always show "Not loaded" even when the packages are installed and working.
+
+### Root Cause
+
+The status command imports `ruvector-training.js` and `memory-initializer.js` but only calls `initializeIntelligence()` (for the SONA Coordinator). It never calls:
+- `ruvector.initializeTraining()` — sets `initialized = true`, loads WASM MicroLoRA, initializes SONA engine
+- `getHNSWIndex()` — creates the HNSW index from `@ruvector/core`
+
+### Fix
+
+After the `initializeIntelligence()` call (~line 351), add initialization for RuVector and HNSW:
+
+```javascript
+// Patch 18: Initialize RuVector WASM + SONA + HNSW so status reflects reality
+if (!ruvector.getTrainingStats().initialized) {
+    await ruvector.initializeTraining({ useSona: true }).catch(() => {});
+}
+await getHNSWIndex().catch(() => null);
+```
+
+Also update the import to include `getHNSWIndex`:
+
+```javascript
+const { getHNSWIndex, getHNSWStatus, loadEmbeddingModel } = await import('../memory/memory-initializer.js');
+```
+
+### Verify:
+
+```bash
+npx @claude-flow/cli@latest neural status
+# All components should show Active/Ready instead of "Not loaded"
+```
+
+### Status: Applied (npx cache)
+
+**Applied to:**
+- ✅ npx cache: `~/.npm/_npx/85fb20e3e7e3a233/node_modules/@claude-flow/cli/dist/src/commands/neural.js`
+
+---
