@@ -255,81 +255,94 @@ Also skip `JSON.parse()` for non-JSON:
 
 ---
 
-## Patch 8: Nomic Embed Text v1 — upgrade default embedding model (Enhancement)
+## Patch 8: Config-driven embedding model loader (Enhancement)
 
-**File:** `memory/memory-initializer.js` lines 1162, 1166, 1171, 1175, 1176 (inside `loadEmbeddingModel()`)
+**File:** `memory/memory-initializer.js` `loadEmbeddingModel()` function
+**Issue:** CLI hardcodes `Xenova/all-MiniLM-L6-v2` (384-dim). The `--embedding-model` flag and `embeddings.json` config exist but the loader ignores them.
 
-**Previously:** This slot held an OpenAI embedding provider patch that added cloud API support. That patch has been **replaced** with a simpler 3-line model swap to a better local ONNX model.
+**Root cause:** `loadEmbeddingModel()` hardcodes the model name and dimensions. Projects that configured a different model via `embeddings.json` (e.g. `all-mpnet-base-v2` 768-dim) still got MiniLM 384-dim vectors.
 
-CLI hardcodes `Xenova/all-MiniLM-L6-v2` (384-dim, MTEB 56.3, 512 token context). The `--embedding-model` CLI flag writes to `embeddings.json` but the loader never reads it. This patch switches to `Xenova/nomic-embed-text-v1` (768-dim, MTEB 62.3, 8192 token context, Matryoshka embeddings).
+**Fix:** Read model name and dimensions from `.claude-flow/embeddings.json` at load time. Falls back to `all-MiniLM-L6-v2` (384-dim) if no config exists.
 
-**Why Nomic over MiniLM:**
-- +6.0 MTEB points (62.3 vs 56.3) — better pattern matching and routing accuracy
-- 8192 token context (vs 512) — daemon workers can analyze full files
-- Matryoshka embeddings — truncate to 256d for speed without re-embedding
-- 86.2% BEIR retrieval accuracy (vs 78.1% for MiniLM)
-- ~100MB model, works with existing `@xenova/transformers@2.17.2`
-
-**Patch** (5 lines in `memory-initializer.js`):
+**Patch** (replace the hardcoded model block in `loadEmbeddingModel()`):
 
 ```javascript
-// Line 1162 — update log message
-// BEFORE:
+// BEFORE (hardcoded):
+        const transformers = await import('@xenova/transformers').catch(() => null);
+        if (transformers) {
+            if (verbose) {
                 console.log('Loading ONNX embedding model (all-MiniLM-L6-v2)...');
-// AFTER:
-                console.log('Loading ONNX embedding model (nomic-embed-text-v1)...');
-
-// Line 1166 — change model identifier
-// BEFORE:
+            }
+            const { pipeline } = transformers;
             const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-// AFTER:
-            const embedder = await pipeline('feature-extraction', 'Xenova/nomic-embed-text-v1');
-
-// Line 1171 — change dimensions in state object
-// BEFORE:
+            embeddingModelState = {
+                loaded: true,
+                model: embedder,
+                tokenizer: null,
                 dimensions: 384 // MiniLM-L6 produces 384-dim vectors
-// AFTER:
-                dimensions: 768 // Nomic Embed Text v1 produces 768-dim vectors
-
-// Line 1175 — change dimensions in return value
-// BEFORE:
+            };
+            return {
+                success: true,
                 dimensions: 384,
-// AFTER:
-                dimensions: 768,
-
-// Line 1176 — change model name in return value
-// BEFORE:
                 modelName: 'all-MiniLM-L6-v2',
-// AFTER:
-                modelName: 'nomic-embed-text-v1',
+                loadTime: Date.now() - startTime
+            };
+        }
+
+// AFTER (config-driven):
+        // Patch 8: Read embedding model from project config instead of hardcoding
+        let modelName = 'all-MiniLM-L6-v2';
+        let modelDimensions = 384;
+        try {
+            const embConfigPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
+            if (fs.existsSync(embConfigPath)) {
+                const embConfig = JSON.parse(fs.readFileSync(embConfigPath, 'utf-8'));
+                if (embConfig.model) {
+                    modelName = embConfig.model;
+                    modelDimensions = embConfig.dimension || 768;
+                }
+            }
+        } catch { /* use defaults */ }
+        const xenovaModel = modelName.startsWith('Xenova/') ? modelName : `Xenova/${modelName}`;
+        const transformers = await import('@xenova/transformers').catch(() => null);
+        if (transformers) {
+            if (verbose) {
+                console.log(`Loading ONNX embedding model (${modelName})...`);
+            }
+            const { pipeline } = transformers;
+            const embedder = await pipeline('feature-extraction', xenovaModel);
+            embeddingModelState = {
+                loaded: true,
+                model: embedder,
+                tokenizer: null,
+                dimensions: modelDimensions
+            };
+            return {
+                success: true,
+                dimensions: modelDimensions,
+                modelName: modelName,
+                loadTime: Date.now() - startTime
+            };
+        }
 ```
 
-**sed commands:**
-```bash
-sed -i "s|'Xenova/all-MiniLM-L6-v2'|'Xenova/nomic-embed-text-v1'|" "$MEMORY/memory-initializer.js"
-sed -i "s|dimensions: 384 // MiniLM-L6 produces 384-dim vectors|dimensions: 768 // Nomic Embed Text v1 produces 768-dim vectors|" "$MEMORY/memory-initializer.js"
-sed -i "s|dimensions: 384,|dimensions: 768,|" "$MEMORY/memory-initializer.js"
-sed -i "s|modelName: 'all-MiniLM-L6-v2'|modelName: 'nomic-embed-text-v1'|" "$MEMORY/memory-initializer.js"
-sed -i "s|Loading ONNX embedding model (all-MiniLM-L6-v2)|Loading ONNX embedding model (nomic-embed-text-v1)|" "$MEMORY/memory-initializer.js"
-```
+Too complex for `sed`. Use python3 block-replace (see `apply-patches.sh`).
 
-**Also update** `.claude-flow/embeddings.json` per-project:
+**Config file:** `.claude-flow/embeddings.json` (per-project, created by `--embedding-model` flag):
 ```json
 {
   "provider": "transformers",
-  "model": "Xenova/nomic-embed-text-v1",
+  "model": "all-mpnet-base-v2",
   "dimension": 768
 }
 ```
 
-**After patching:** Clear memory and re-init (vectors change dimensionality):
+**After patching:** If changing models, clear memory and re-init (vectors change dimensionality):
 ```bash
 npx @claude-flow/cli@latest memory init --force --verbose
-npx @claude-flow/cli@latest hooks pretrain --model-type moe --epochs 10
-npx @claude-flow/cli@latest embeddings warmup
 ```
 
-**Revert:** Reverse the sed commands (swap model names and dims back), or reinstall the CLI.
+**Revert:** Replace the config-reading block with the original hardcoded `all-MiniLM-L6-v2`, or reinstall the CLI.
 
 ---
 
@@ -413,35 +426,6 @@ npx @claude-flow/cli@latest memory search --query "test" --build-hnsw
 
 ---
 
-## Patch 10: Parallel search initialization (Enhancement)
-
-**File:** `memory/memory-initializer.js` `searchEntries()` function
-**Impact:** Shaves ~30ms off cold search; pre-warms HNSW index while ONNX model loads
-
-The `searchEntries()` function runs three independent initialization steps sequentially:
-1. `ensureSchemaColumns(dbPath)` — schema migration check (~5ms)
-2. `generateEmbedding(query)` — triggers ONNX model load on first call (~450ms)
-3. `searchHNSWIndex(queryEmbedding)` — initializes HNSW if needed (~30ms)
-
-Steps 1 and 3 are independent of step 2's input. Running all three in parallel via `Promise.all` means HNSW is pre-warmed by the time the embedding is ready.
-
-```diff
--        await ensureSchemaColumns(dbPath);
--        const queryEmb = await generateEmbedding(query);
--        const queryEmbedding = queryEmb.embedding;
--        const hnswResults = await searchHNSWIndex(queryEmbedding, { k: limit, namespace });
-+        // Patch 10: Parallel schema check + embedding gen + HNSW warm-up
-+        const [, queryEmb] = await Promise.all([
-+            ensureSchemaColumns(dbPath),
-+            generateEmbedding(query),
-+            getHNSWIndex() // Pre-warm HNSW while model loads
-+        ]);
-+        const queryEmbedding = queryEmb.embedding;
-+        const hnswResults = await searchHNSWIndex(queryEmbedding, { k: limit, namespace });
-```
-
----
-
 ## Patch 11: Enable + implement preload worker (Enhancement)
 
 **File:** `services/worker-daemon.js`
@@ -481,24 +465,6 @@ The consolidation worker was a stub writing `{patternsConsolidated: 0}` to a JSO
 
 ---
 
-## Patch 13: Real ultralearn worker (Enhancement)
-
-**File:** `services/worker-daemon.js` `runUltralearnWorkerLocal()`
-**Impact:** Initializes WASM-accelerated neural training pipeline
-
-The ultralearn worker was a stub. Now it:
-1. Initializes `ruvector-training.js` with MicroLoRA, ScopedLoRA, FlashAttention, SONA, AdamW, InfoNCE
-2. Runs SONA background tick for pattern consolidation
-3. Applies reward-based adaptation from trajectory statistics
-
-**Verified output:**
-```json
-{
-  "insightsGained": ["Training init: MicroLoRA (256-dim, <1μs adaptation), ScopedLoRA (17 operators), TrajectoryBuffer, FlashAttention, AdamW Optimizer, InfoNCE Loss, SONA (256-dim, rank-4, 624k learn/s)"],
-  "sonaEnabled": true
-}
-```
-
 ---
 
 ## Patch 14: @xenova/transformers cache permission (Medium)
@@ -520,36 +486,6 @@ fi
 **Alternative:** `export TRANSFORMERS_CACHE="$HOME/.cache/transformers" && mkdir -p "$TRANSFORMERS_CACHE"`
 
 ---
-
-## Patch 15: auto-memory-hook.mjs missing after init (Medium)
-
-**Applies to:** Per-project
-**Issue:** [#1107](https://github.com/ruvnet/claude-flow/issues/1107)
-
-`claude-flow init` writes `settings.json` referencing `.claude/helpers/auto-memory-hook.mjs` but fails to copy the file. Root cause: `findSourceHelpersDir()` uses `hook-handler.cjs` as a sentinel, which doesn't exist at init time.
-
-**Fix:** Copy from installed package:
-```bash
-SOURCE=$(find $(npm root -g)/claude-flow -name "auto-memory-hook.mjs" -path "*/.claude/helpers/*" 2>/dev/null | head -1)
-[ -z "$SOURCE" ] && SOURCE=$(find ~/.npm/_npx -name "auto-memory-hook.mjs" -path "*/.claude/helpers/*" 2>/dev/null | head -1)
-[ -n "$SOURCE" ] && cp "$SOURCE" .claude/helpers/auto-memory-hook.mjs && echo "OK" || echo "ERROR: not found"
-```
-
-**Also fix CWD issue:** Claude Code runs Stop hooks with CWD = `.claude/helpers/`, doubling relative paths. Use absolute paths in `settings.json`:
-```json
-{
-  "hooks": {
-    "SessionStart": [{ "hooks": [{
-      "command": "node \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.claude/helpers/auto-memory-hook.mjs\" import",
-      "timeout": 8000, "continueOnError": true
-    }]}],
-    "Stop": [{ "hooks": [{
-      "command": "node \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.claude/helpers/auto-memory-hook.mjs\" sync",
-      "timeout": 8000, "continueOnError": true
-    }]}]
-  }
-}
-```
 
 ---
 
@@ -576,14 +512,12 @@ check "4C: logsDir"            "grep -q 'logsDir' '$COMMANDS/daemon.js'"
 check "5: CPU load 6.0"        "grep -q 'maxCpuLoad: 6' '$SERVICES/worker-daemon.js'"
 check "6: macOS mem skip"      "grep -q 'darwin' '$SERVICES/worker-daemon.js'"
 check "7: YAML config"         "grep -q 'config.yaml' '$COMMANDS/doctor.js'"
-check "8: Nomic embed model"   "grep -q 'nomic-embed-text-v1' '$MEMORY/memory-initializer.js'"
+check "8: Config-driven model"  "grep -q 'embeddings.json' '$MEMORY/memory-initializer.js'"
 check "9: HNSW dim from config" "grep -q 'embeddings.json' '$MEMORY/memory-initializer.js'"
 check "9: HNSW stale cleanup"   "grep -q 'forceRebuild.*unlinkSync\|Patch 9A' '$MEMORY/memory-initializer.js'"
-check "10: parallel search"     "grep -q 'Promise.all' '$MEMORY/memory-initializer.js'"
 check "11: preload in defaults" "grep -q 'Embedding model' '$SERVICES/worker-daemon.js'"
 check "11: real preload"        "grep -q 'loadEmbeddingModel' '$SERVICES/worker-daemon.js'"
 check "12: real consolidate"    "grep -q 'applyTemporalDecay' '$SERVICES/worker-daemon.js'"
-check "13: real ultralearn"     "grep -q 'initializeTraining' '$SERVICES/worker-daemon.js'"
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 ```
@@ -599,8 +533,6 @@ ls -la .swarm/hnsw.index .swarm/hnsw.metadata.json 2>/dev/null && echo "WARN: st
 # Patch 14: cache permissions
 ls -la $(npm root -g)/claude-flow/node_modules/@xenova/transformers/.cache 2>/dev/null
 
-# Patch 15: auto-memory-hook
-ls -la .claude/helpers/auto-memory-hook.mjs
 ```
 
 ---
@@ -616,13 +548,12 @@ ls -la .claude/helpers/auto-memory-hook.mjs
 | 5 | worker-daemon.js:54 | Critical | -- | maxCpuLoad=2.0 blocks workers on multi-core |
 | 6 | worker-daemon.js:146-148 | Critical | -- | os.freemem() reports ~0% on macOS |
 | 7 | doctor.js:~59-79 | Low | -- | Doctor ignores YAML config |
-| 8 | memory-initializer.js:1162-1176 | Enhancement | -- | Upgrade embedding model to Nomic Embed Text v1 (768d, 8192 ctx) |
+| 8 | memory-initializer.js:loadEmbeddingModel | Enhancement | -- | Config-driven embedding model loader (reads from embeddings.json) |
 | 9 | memory-initializer.js:311,356-391,524 | High | -- | HNSW dimension mismatch + stale index files = search always brute-force |
-| 10 | memory-initializer.js:searchEntries | Enhancement | -- | Parallel search init (schema + embedding + HNSW warm-up) |
 | 11 | worker-daemon.js:DEFAULT_WORKERS | Enhancement | -- | Enable preload worker + add missing workers to defaults |
 | 12 | worker-daemon.js:consolidate | Enhancement | -- | Real consolidation: pattern decay + HNSW rebuild |
-| 13 | worker-daemon.js:ultralearn | Enhancement | -- | Real ultralearn: WASM neural training + SONA |
 | 14 | @xenova/transformers (dir perms) | Medium | -- | Model cache EACCES on global install |
-| 15 | Per-project setup | Medium | [#1107](https://github.com/ruvnet/claude-flow/issues/1107) | auto-memory-hook.mjs missing + CWD fix |
 
 **Note:** The previous Bug 12 ("neural HNSW reports @ruvector/core not available") was NOT cosmetic — it indicated a real dimension mismatch causing all searches to fall back to brute-force SQLite. Fixed by Patch 9.
+
+**Deleted patches:** 10 (parallel search init — 30ms cold-only, not worth it), 13 (ultralearn — upstream is headless/AI per ADR-020, patch wrongly made it local WASM), 15 (auto-memory-hook — already resolved by init).

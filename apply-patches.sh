@@ -178,10 +178,12 @@ patch("4C: daemon log path",
     }""")
 
 # ── Patch 5: CPU load threshold ──
-patch("5: CPU load 6.0",
+# NOTE: Default in doc is 6.0 for 8-core. Adjust per machine.
+# 32-core server: 28.0. 8-core Mac: 6.0.
+patch("5: CPU load threshold",
     WD,
     "maxCpuLoad: 2.0",
-    "maxCpuLoad: 6.0")
+    "maxCpuLoad: 28.0")
 
 # ── Patch 6: macOS memory skip ──
 patch("6: macOS memory",
@@ -210,31 +212,65 @@ patch("7: YAML JSON.parse skip",
     "                JSON.parse(content);",
     "                if (configPath.endsWith('.json')) { JSON.parse(content); }")
 
-# ── Patch 8: Nomic embedding model ──
-patch("8: Nomic log msg",
+# ── Patch 8: Config-driven embedding model loader ──
+patch("8: config-driven model",
     MI,
-    "Loading ONNX embedding model (all-MiniLM-L6-v2)",
-    "Loading ONNX embedding model (nomic-embed-text-v1)")
-
-patch_all("8: Nomic model name",
-    MI,
-    "'Xenova/all-MiniLM-L6-v2'",
-    "'Xenova/nomic-embed-text-v1'")
-
-patch("8: Nomic dims state",
-    MI,
-    "dimensions: 384 // MiniLM-L6 produces 384-dim vectors",
-    "dimensions: 768 // Nomic Embed Text v1 produces 768-dim vectors")
-
-patch_all("8: Nomic dims return",
-    MI,
-    "dimensions: 384,",
-    "dimensions: 768,")
-
-patch_all("8: Nomic modelName",
-    MI,
-    "modelName: 'all-MiniLM-L6-v2'",
-    "modelName: 'nomic-embed-text-v1'")
+    """        // Try to import @xenova/transformers for ONNX embeddings
+        const transformers = await import('@xenova/transformers').catch(() => null);
+        if (transformers) {
+            if (verbose) {
+                console.log('Loading ONNX embedding model (all-MiniLM-L6-v2)...');
+            }
+            const { pipeline } = transformers;
+            const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+            embeddingModelState = {
+                loaded: true,
+                model: embedder,
+                tokenizer: null,
+                dimensions: 384 // MiniLM-L6 produces 384-dim vectors
+            };
+            return {
+                success: true,
+                dimensions: 384,
+                modelName: 'all-MiniLM-L6-v2',
+                loadTime: Date.now() - startTime
+            };
+        }""",
+    """        // Patch 8: Read embedding model from project config instead of hardcoding
+        let modelName = 'all-MiniLM-L6-v2';
+        let modelDimensions = 384;
+        try {
+            const embConfigPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
+            if (fs.existsSync(embConfigPath)) {
+                const embConfig = JSON.parse(fs.readFileSync(embConfigPath, 'utf-8'));
+                if (embConfig.model) {
+                    modelName = embConfig.model;
+                    modelDimensions = embConfig.dimension || 768;
+                }
+            }
+        } catch { /* use defaults */ }
+        const xenovaModel = modelName.startsWith('Xenova/') ? modelName : `Xenova/${modelName}`;
+        // Try to import @xenova/transformers for ONNX embeddings
+        const transformers = await import('@xenova/transformers').catch(() => null);
+        if (transformers) {
+            if (verbose) {
+                console.log(`Loading ONNX embedding model (${modelName})...`);
+            }
+            const { pipeline } = transformers;
+            const embedder = await pipeline('feature-extraction', xenovaModel);
+            embeddingModelState = {
+                loaded: true,
+                model: embedder,
+                tokenizer: null,
+                dimensions: modelDimensions
+            };
+            return {
+                success: true,
+                dimensions: modelDimensions,
+                modelName: modelName,
+                loadTime: Date.now() - startTime
+            };
+        }""")
 
 # ── Patch 9: HNSW dimension fix ──
 patch("9: HNSW dim default",
@@ -288,27 +324,7 @@ patch("9: HNSW status default",
     "dimensions: hnswIndex?.dimensions ?? 384",
     "dimensions: hnswIndex?.dimensions ?? 768")
 
-# ── Patch 10: Parallel search initialization ──
-# searchEntries() runs schema check, embedding gen, and HNSW init sequentially.
-# Parallelize them: ~30ms saved on cold, HNSW pre-warmed for hot path.
-patch("10: parallel search init",
-    MI,
-    """        // Ensure schema has all required columns (migration for older DBs)
-        await ensureSchemaColumns(dbPath);
-        // Generate query embedding
-        const queryEmb = await generateEmbedding(query);
-        const queryEmbedding = queryEmb.embedding;
-        // Try HNSW search first (150x faster)
-        const hnswResults = await searchHNSWIndex(queryEmbedding, { k: limit, namespace });""",
-    """        // Patch 10: Parallel schema check + embedding gen + HNSW warm-up
-        const [, queryEmb] = await Promise.all([
-            ensureSchemaColumns(dbPath),
-            generateEmbedding(query),
-            getHNSWIndex() // Pre-warm HNSW while model loads
-        ]);
-        const queryEmbedding = queryEmb.embedding;
-        // Try HNSW search first (150x faster)
-        const hnswResults = await searchHNSWIndex(queryEmbedding, { k: limit, namespace });""")
+# ── Patch 10: DELETED (parallel search init — ~30ms cold only, not worth it) ──
 
 # ── Patch 11: Enable + implement preload worker ──
 # The preload worker is disabled by default and is a stub.
@@ -318,7 +334,7 @@ patch("11: add missing workers to defaults",
     WD,
     "    { type: 'document', intervalMs: 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Auto-documentation', enabled: false },\n];",
     """    { type: 'document', intervalMs: 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Auto-documentation', enabled: false },
-    { type: 'ultralearn', intervalMs: 60 * 60 * 1000, offsetMs: 10 * 60 * 1000, priority: 'normal', description: 'Neural pattern training', enabled: true },
+    { type: 'ultralearn', intervalMs: 0, offsetMs: 0, priority: 'normal', description: 'Deep knowledge acquisition (headless, manual trigger)', enabled: false },
     { type: 'deepdive', intervalMs: 4 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Deep code analysis', enabled: false },
     { type: 'refactor', intervalMs: 4 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Refactoring suggestions', enabled: false },
     { type: 'benchmark', intervalMs: 2 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Performance benchmarking', enabled: false },
@@ -394,42 +410,7 @@ patch("12: real consolidate worker",
         return result;
     }""")
 
-# ── Patch 13: Real ultralearn worker ──
-# The ultralearn worker is a stub. Make it init ruvector training + SONA.
-patch("13: real ultralearn worker",
-    WD,
-    """    async runUltralearnWorkerLocal() {
-        return {
-            timestamp: new Date().toISOString(),
-            mode: 'local',
-            patternsLearned: 0,
-            insightsGained: [],
-            note: 'Install Claude Code CLI for AI-powered deep learning',
-        };
-    }""",
-    """    async runUltralearnWorkerLocal() {
-        const result = { timestamp: new Date().toISOString(), mode: 'local', patternsLearned: 0, insightsGained: [] };
-        try {
-            const training = await import('./ruvector-training.js');
-            const stats = training.getTrainingStats();
-            if (!stats.initialized) {
-                const initResult = await training.initializeTraining({ dim: 256, useSona: true, useFlashAttention: true });
-                if (initResult.success) result.insightsGained.push('Training init: ' + initResult.features.join(', '));
-            }
-            // SONA background tick (consolidation + learning)
-            training.sonaTick();
-            // Reward-based adaptation from recent trajectory stats
-            const trajStats = training.getTrajectoryStats();
-            if (trajStats && trajStats.totalCount > 0) {
-                training.adaptWithReward(trajStats.meanImprovement || 0.01, 0);
-                result.patternsLearned = trajStats.totalCount;
-            }
-            const finalStats = training.getTrainingStats();
-            result.trainingStats = { adaptations: finalStats.totalAdaptations, forwards: finalStats.totalForwards };
-            if (finalStats.sonaStats?.available) result.sonaEnabled = finalStats.sonaStats.enabled;
-        } catch (e) { result.error = e?.message || String(e); }
-        return result;
-    }""")
+# ── Patch 13: DELETED (ultralearn is headless/AI-powered per ADR-020, not local WASM) ──
 
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
