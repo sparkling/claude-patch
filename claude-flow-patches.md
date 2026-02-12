@@ -518,6 +518,7 @@ check "9: HNSW stale cleanup"   "grep -q 'forceRebuild.*unlinkSync\|Patch 9A' '$
 check "11: preload in defaults" "grep -q 'Embedding model' '$SERVICES/worker-daemon.js'"
 check "11: real preload"        "grep -q 'loadEmbeddingModel' '$SERVICES/worker-daemon.js'"
 check "12: real consolidate"    "grep -q 'applyTemporalDecay' '$SERVICES/worker-daemon.js'"
+check "16: config reads YAML"   "grep -q 'readYamlConfig' '$COMMANDS/config.js'"
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 ```
@@ -553,7 +554,239 @@ ls -la $(npm root -g)/claude-flow/node_modules/@xenova/transformers/.cache 2>/de
 | 11 | worker-daemon.js:DEFAULT_WORKERS | Enhancement | -- | Enable preload worker + add missing workers to defaults |
 | 12 | worker-daemon.js:consolidate | Enhancement | -- | Real consolidation: pattern decay + HNSW rebuild |
 | 14 | @xenova/transformers (dir perms) | Medium | -- | Model cache EACCES on global install |
+| 16 | config.js:1-6,121-135,321-330 | Medium | -- | Config export/get uses hardcoded defaults instead of reading YAML |
 
 **Note:** The previous Bug 12 ("neural HNSW reports @ruvector/core not available") was NOT cosmetic — it indicated a real dimension mismatch causing all searches to fall back to brute-force SQLite. Fixed by Patch 9.
 
 **Deleted patches:** 10 (parallel search init — 30ms cold-only, not worth it), 13 (ultralearn — upstream is headless/AI per ADR-020, patch wrongly made it local WASM), 15 (auto-memory-hook — already resolved by init).
+
+---
+
+## Patch 16: Config export reads from config.yaml (Medium)
+
+**File:** `commands/config.js` lines 1-6, 121-135, 321-330
+**Issue:** `config export` and `config get` show hardcoded defaults instead of reading `.claude-flow/config.yaml`
+
+The `config export` and `config get` commands use hardcoded defaults (topology: 'hybrid', cacheSize: 256) instead of reading the actual YAML config file. This makes the commands misleading when the project has a custom config.
+
+### Changes:
+1. Add imports for `fs` and `path` modules
+2. Add `readYamlConfig()` helper function (simple YAML parser for key: value pairs)
+3. Update `getCommand` action to merge YAML config with defaults
+4. Update `exportCommand` action to merge YAML config with defaults
+
+### Apply:
+
+```bash
+# Add imports (after line 6)
+sed -i "6 a\\
+import { readFileSync, existsSync } from 'fs';\\
+import { join } from 'path';\\
+\\
+// Helper to read config.yaml if it exists\\
+function readYamlConfig() {\\
+    const configPath = join(process.cwd(), '.claude-flow', 'config.yaml');\\
+    if (!existsSync(configPath)) {\\
+        return {};\\
+    }\\
+    try {\\
+        const content = readFileSync(configPath, 'utf8');\\
+        const config = {};\\
+        // Simple YAML parser for key: value pairs\\
+        const lines = content.split('\\\\n');\\
+        let currentSection = null;\\
+        for (const line of lines) {\\
+            const trimmed = line.trim();\\
+            if (!trimmed || trimmed.startsWith('#')) continue;\\
+            if (!trimmed.includes(':')) continue;\\
+            const indent = line.match(/^\\\\s*/)[0].length;\\
+            if (indent === 0) {\\
+                // Top-level key\\
+                const [key, value] = trimmed.split(':').map(s => s.trim());\\
+                if (value && value !== '') {\\
+                    config[key] = value.replace(/^[\"']|[\"']$/g, '');\\
+                } else {\\
+                    currentSection = key;\\
+                    config[key] = {};\\
+                }\\
+            } else if (currentSection && indent > 0) {\\
+                // Nested key\\
+                const [key, value] = trimmed.split(':').map(s => s.trim());\\
+                if (value && value !== '') {\\
+                    config[currentSection][key] = value.replace(/^[\"']|[\"']$/g, '');\\
+                }\\
+            }\\
+        }\\
+        return config;\\
+    } catch (error) {\\
+        return {};\\
+    }\\
+}" "$COMMANDS/config.js"
+```
+
+### Manual patch (recommended):
+
+Since the sed command is complex, manual patching is recommended:
+
+1. **Add imports** after line 6:
+```javascript
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+```
+
+2. **Add helper function** after imports:
+```javascript
+// Helper to read config.yaml if it exists
+function readYamlConfig() {
+    const configPath = join(process.cwd(), '.claude-flow', 'config.yaml');
+    if (!existsSync(configPath)) {
+        return {};
+    }
+    try {
+        const content = readFileSync(configPath, 'utf8');
+        const config = {};
+        // Simple YAML parser for key: value pairs
+        const lines = content.split('\n');
+        let currentSection = null;
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            if (!trimmed.includes(':')) continue;
+            const indent = line.match(/^\s*/)[0].length;
+            if (indent === 0) {
+                // Top-level key
+                const [key, value] = trimmed.split(':').map(s => s.trim());
+                if (value && value !== '') {
+                    config[key] = value.replace(/^["']|["']$/g, '');
+                } else {
+                    currentSection = key;
+                    config[key] = {};
+                }
+            } else if (currentSection && indent > 0) {
+                // Nested key
+                const [key, value] = trimmed.split(':').map(s => s.trim());
+                if (value && value !== '') {
+                    config[currentSection][key] = value.replace(/^["']|["']$/g, '');
+                }
+            }
+        }
+        return config;
+    } catch (error) {
+        return {};
+    }
+}
+```
+
+3. **Update getCommand action** (around line 121):
+Replace:
+```javascript
+const configValues = {
+    'version': '3.0.0',
+    'v3Mode': true,
+    'swarm.topology': 'hybrid',
+    'swarm.maxAgents': 15,
+    'swarm.autoScale': true,
+    'memory.backend': 'hybrid',
+    'memory.cacheSize': 256,
+    'mcp.transport': 'stdio',
+    'agents.defaultType': 'coder',
+    'agents.maxConcurrent': 15
+};
+```
+
+With:
+```javascript
+// Default config values
+const defaults = {
+    'version': '3.0.0',
+    'v3Mode': true,
+    'swarm.topology': 'hybrid',
+    'swarm.maxAgents': 15,
+    'swarm.autoScale': true,
+    'memory.backend': 'hybrid',
+    'memory.cacheSize': 256,
+    'mcp.transport': 'stdio',
+    'agents.defaultType': 'coder',
+    'agents.maxConcurrent': 15
+};
+// Read YAML config and merge with defaults
+const yamlConfig = readYamlConfig();
+const configValues = { ...defaults };
+if (yamlConfig.swarm) {
+    if (yamlConfig.swarm.topology) configValues['swarm.topology'] = yamlConfig.swarm.topology;
+    if (yamlConfig.swarm.maxAgents) configValues['swarm.maxAgents'] = parseInt(yamlConfig.swarm.maxAgents) || defaults['swarm.maxAgents'];
+    if (yamlConfig.swarm.autoScale !== undefined) configValues['swarm.autoScale'] = yamlConfig.swarm.autoScale === 'true' || yamlConfig.swarm.autoScale === true;
+}
+if (yamlConfig.memory) {
+    if (yamlConfig.memory.backend) configValues['memory.backend'] = yamlConfig.memory.backend;
+    if (yamlConfig.memory.cacheSize) configValues['memory.cacheSize'] = parseInt(yamlConfig.memory.cacheSize) || defaults['memory.cacheSize'];
+}
+if (yamlConfig.mcp && yamlConfig.mcp.transport) {
+    configValues['mcp.transport'] = yamlConfig.mcp.transport;
+}
+if (yamlConfig.version) {
+    configValues['version'] = yamlConfig.version;
+}
+```
+
+4. **Update exportCommand action** (around line 323):
+Replace:
+```javascript
+const config = {
+    version: '3.0.0',
+    exportedAt: new Date().toISOString(),
+    agents: { defaultType: 'coder', maxConcurrent: 15 },
+    swarm: { topology: 'hybrid', maxAgents: 15 },
+    memory: { backend: 'hybrid', cacheSize: 256 },
+    mcp: { transport: 'stdio', tools: 'all' }
+};
+```
+
+With:
+```javascript
+// Start with defaults
+const config = {
+    version: '3.0.0',
+    exportedAt: new Date().toISOString(),
+    agents: { defaultType: 'coder', maxConcurrent: 15 },
+    swarm: { topology: 'hybrid', maxAgents: 15 },
+    memory: { backend: 'hybrid', cacheSize: 256 },
+    mcp: { transport: 'stdio', tools: 'all' }
+};
+// Read YAML config and merge
+const yamlConfig = readYamlConfig();
+if (yamlConfig.version) {
+    config.version = yamlConfig.version;
+}
+if (yamlConfig.swarm) {
+    if (yamlConfig.swarm.topology) config.swarm.topology = yamlConfig.swarm.topology;
+    if (yamlConfig.swarm.maxAgents) config.swarm.maxAgents = parseInt(yamlConfig.swarm.maxAgents) || 15;
+}
+if (yamlConfig.memory) {
+    if (yamlConfig.memory.backend) config.memory.backend = yamlConfig.memory.backend;
+    if (yamlConfig.memory.cacheSize) config.memory.cacheSize = parseInt(yamlConfig.memory.cacheSize) || 256;
+}
+if (yamlConfig.mcp && yamlConfig.mcp.transport) {
+    config.mcp.transport = yamlConfig.mcp.transport;
+}
+```
+
+### Verify:
+
+```bash
+# Should show topology: hierarchical-mesh (from config.yaml, not hardcoded hybrid)
+npx @claude-flow/cli@latest config export --format json
+
+# Should show hierarchical-mesh
+npx @claude-flow/cli@latest config get swarm.topology
+
+# Should show 512 (from config.yaml, not hardcoded 256)
+npx @claude-flow/cli@latest config get memory.cacheSize
+```
+
+### Verification script addition:
+
+Add to the verification script:
+```bash
+check "16: config reads YAML"  "npx @claude-flow/cli@latest config get swarm.topology 2>/dev/null | grep -q 'hierarchical-mesh'"
+```
