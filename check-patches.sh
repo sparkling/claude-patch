@@ -22,13 +22,24 @@ if grep -q "embeddings.json" "$MEMORY" 2>/dev/null \
   exit 0
 fi
 
-# Patches wiped — auto-reapply
+# Patches wiped — auto-reapply and warn
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo "[PATCHES] Version update detected (v$VERSION) — patches wiped, auto-reapplying..."
+
+echo ""
+echo "============================================"
+echo "  WARNING: claude-flow patches were wiped!"
+echo "  Likely cause: npx cache update (v$VERSION)"
+echo "============================================"
+echo ""
 
 if [ -x "$SCRIPT_DIR/apply-patches.sh" ]; then
   bash "$SCRIPT_DIR/apply-patches.sh"
-  echo "[PATCHES] Reapplied. Daemon restart recommended: npx @claude-flow/cli daemon stop && npx @claude-flow/cli daemon start"
+  echo ""
+  echo "[PATCHES] Auto-reapplied. Restarting daemon..."
+  npx @claude-flow/cli@latest daemon stop 2>/dev/null
+  npx @claude-flow/cli@latest daemon start 2>/dev/null
+  echo "[PATCHES] Daemon restarted with patched code."
+  echo ""
 else
   echo "[PATCHES] ERROR: apply-patches.sh not found at $SCRIPT_DIR"
   echo "[PATCHES] Run manually: bash scripts/apply-patches.sh"
