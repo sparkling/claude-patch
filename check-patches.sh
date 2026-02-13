@@ -14,8 +14,11 @@ VERSION=$(grep -o '"version":"[^"]*"' "$(dirname "$MEMORY")/../../package.json" 
 COMMANDS_DIR=$(dirname "$SERVICES")/../commands
 MCP_TOOLS_DIR=$(dirname "$MEMORY")/../mcp-tools
 
-# Quick check: Patch 8 (config-driven) + Patch 5 (CPU load) + Patch 11 (preload) + Patch 12 (consolidate) + Patch 18 (neural init)
-# + Patch 19 (search 'all') + Patch 20 (store requires ns) + Patch 21 (nsFilter) + Patch 22 ('patterns' typo)
+# Quick sentinel checks by issue ID:
+# EM-001 (embeddings.json), DM-002 (maxCpuLoad), DM-004 (loadEmbeddingModel),
+# DM-005 (applyTemporalDecay), UI-002 (getHNSWIndex in neural.js),
+# NS-001 (all namespaces), NS-002 (Namespace is required + cannot be 'all'),
+# NS-001 (nsFilter), NS-003 ('patterns' typo)
 if grep -q "embeddings.json" "$MEMORY" 2>/dev/null \
    && grep -q "maxCpuLoad:" "$SERVICES" 2>/dev/null \
    && grep -q "loadEmbeddingModel" "$SERVICES" 2>/dev/null \
@@ -40,8 +43,8 @@ echo "  Likely cause: npx cache update (v$VERSION)"
 echo "============================================"
 echo ""
 
-if [ -x "$SCRIPT_DIR/apply-patches.sh" ]; then
-  bash "$SCRIPT_DIR/apply-patches.sh"
+if [ -x "$SCRIPT_DIR/patch-all.sh" ]; then
+  bash "$SCRIPT_DIR/patch-all.sh"
   echo ""
   echo "[PATCHES] Auto-reapplied. Restarting daemon..."
   npx @claude-flow/cli@latest daemon stop 2>/dev/null
@@ -49,6 +52,6 @@ if [ -x "$SCRIPT_DIR/apply-patches.sh" ]; then
   echo "[PATCHES] Daemon restarted with patched code."
   echo ""
 else
-  echo "[PATCHES] ERROR: apply-patches.sh not found at $SCRIPT_DIR"
-  echo "[PATCHES] Run manually: bash scripts/apply-patches.sh"
+  echo "[PATCHES] ERROR: patch-all.sh not found at $SCRIPT_DIR"
+  echo "[PATCHES] Run manually: bash ~/src/claude-patch/patch-all.sh"
 fi
