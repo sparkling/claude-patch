@@ -419,16 +419,125 @@ patch("12: real consolidate worker",
 # and is consistent with ADR-024 embeddings/search using 0.5.
 # See: https://github.com/ruvnet/claude-flow/issues/1131
 MCP_MEMORY = base + "/mcp-tools/memory-tools.js"
+MCP_HOOKS = base + "/mcp-tools/hooks-tools.js"
+CLI_MEMORY = commands + "/memory.js"
 
+# Use unique context (const query) to target memory_search specifically, not memory_store
 patch("19: MCP search namespace default",
     MCP_MEMORY,
-    "const namespace = input.namespace || 'default';",
-    "const namespace = input.namespace || 'all';")
+    "const query = input.query;\n            const namespace = input.namespace || 'default';",
+    "const query = input.query;\n            const namespace = input.namespace || 'all';")
 
 patch("19: MCP search namespace description",
     MCP_MEMORY,
     """namespace: { type: 'string', description: 'Namespace to search (default: "default")' }""",
     """namespace: { type: 'string', description: 'Namespace to search (default: "all" = all namespaces)' }""")
+
+# ── Patch 20: Enforce --namespace on write ops + fix 'pattern' typo ──
+# Makes namespace required on store/delete to prevent silent misrouting to 'default'.
+# Fixes inconsistent 'pattern' (singular) vs 'patterns' (plural) in hooks-tools.js.
+# See: https://github.com/ruvnet/claude-flow/issues/1131
+
+# 20a: MCP memory_store — require namespace in schema (unique pattern)
+patch("20a: MCP store require namespace",
+    MCP_MEMORY,
+    "required: ['key', 'value'],",
+    "required: ['key', 'value', 'namespace'],")
+
+# 20b: MCP memory_store — remove || 'default' fallback + add runtime check
+# (MCP framework does NOT enforce 'required' server-side, so handler must check)
+patch("20b: MCP store namespace no fallback",
+    MCP_MEMORY,
+    "const namespace = input.namespace || 'default';\n            const value = typeof",
+    "const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }\n            const value = typeof")
+
+# 20c: MCP memory_delete — require namespace + update description
+patch("20c: MCP delete require namespace",
+    MCP_MEMORY,
+    """        description: 'Delete a memory entry by key',
+        category: 'memory',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                key: { type: 'string', description: 'Memory key' },
+                namespace: { type: 'string', description: 'Namespace (default: "default")' },
+            },
+            required: ['key'],""",
+    """        description: 'Delete a memory entry by key',
+        category: 'memory',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                key: { type: 'string', description: 'Memory key' },
+                namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
+            },
+            required: ['key', 'namespace'],""")
+
+# 20d: MCP memory_delete — remove || 'default' fallback + add runtime check
+patch("20d: MCP delete namespace no fallback",
+    MCP_MEMORY,
+    "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
+    "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
+
+# 20e: CLI memory store — add namespace-required check after key check
+patch("20e: CLI store require namespace",
+    CLI_MEMORY,
+    """        if (!key) {
+            output.printError('Key is required. Use --key or -k');
+            return { success: false, exitCode: 1 };
+        }
+        if (!value && ctx.interactive) {""",
+    """        if (!key) {
+            output.printError('Key is required. Use --key or -k');
+            return { success: false, exitCode: 1 };
+        }
+        if (!namespace) {
+            output.printError('Namespace is required. Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        if (!value && ctx.interactive) {""")
+
+# 20f: CLI memory delete — remove || 'default' fallback and add namespace check
+patch("20f: CLI delete namespace no fallback",
+    CLI_MEMORY,
+    "const namespace = ctx.flags.namespace || 'default';\n        const force = ctx.flags.force;\n        if (!key) {\n            output.printError('Key is required. Use: memory delete -k \"key\" [-n \"namespace\"]');",
+    "const namespace = ctx.flags.namespace;\n        const force = ctx.flags.force;\n        if (!key) {\n            output.printError('Key is required. Use: memory delete -k \"key\" -n \"namespace\"');")
+
+patch("20f: CLI delete namespace check",
+    CLI_MEMORY,
+    """            output.printError('Key is required. Use: memory delete -k "key" -n "namespace"');
+            return { success: false, exitCode: 1 };
+        }
+        if (!force && ctx.interactive) {""",
+    """            output.printError('Key is required. Use: memory delete -k "key" -n "namespace"');
+            return { success: false, exitCode: 1 };
+        }
+        if (!namespace) {
+            output.printError('Namespace is required. Use: memory delete -k "key" -n "namespace" (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        if (!force && ctx.interactive) {""")
+
+# 20g: hooks-tools.js — fix 'pattern' (singular) → 'patterns' (plural)
+patch("20g: hooks pattern-store namespace",
+    MCP_HOOKS,
+    "namespace: 'pattern',",
+    "namespace: 'patterns',")
+
+patch("20g: hooks pattern-search default",
+    MCP_HOOKS,
+    "const namespace = params.namespace || 'pattern';",
+    "const namespace = params.namespace || 'patterns';")
+
+patch("20g: hooks pattern-search description",
+    MCP_HOOKS,
+    "description: 'Namespace to search (default: pattern)'",
+    "description: 'Namespace to search (default: patterns)'")
+
+patch("20g: hooks pattern-search note",
+    MCP_HOOKS,
+    'namespace "pattern".',
+    'namespace "patterns".')
 
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
