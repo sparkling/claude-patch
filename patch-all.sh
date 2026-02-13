@@ -68,6 +68,10 @@ python3 <(
         [ -f "$fix" ] && cat "$fix"
     done
 
+    # Ghost Vector cleanup
+    fix="$SCRIPT_DIR/GV-001-hnsw-ghost-vectors/fix.py"
+    [ -f "$fix" ] && cat "$fix"
+
     echo 'print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")'
 )
 
