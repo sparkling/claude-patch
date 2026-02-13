@@ -544,12 +544,25 @@ patch("20g: hooks pattern-search note",
 # Prevents silent reads from wrong namespace returning false negatives.
 
 # 21a: MCP memory_retrieve — require namespace in schema + runtime check
+# NOTE: old/new includes 'Retrieve a value' to disambiguate from delete section
 patch("21a: MCP retrieve require namespace",
     MCP_MEMORY,
-    """                namespace: { type: 'string', description: 'Namespace (default: "default")' },
+    """        description: 'Retrieve a value from memory by key',
+        category: 'memory',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                key: { type: 'string', description: 'Memory key' },
+                namespace: { type: 'string', description: 'Namespace (default: "default")' },
             },
             required: ['key'],""",
-    """                namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
+    """        description: 'Retrieve a value from memory by key',
+        category: 'memory',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                key: { type: 'string', description: 'Memory key' },
+                namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
             },
             required: ['key', 'namespace'],""")
 
@@ -558,25 +571,17 @@ patch("21a: MCP retrieve namespace no fallback",
     "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
     "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
 
-# 21b: MCP memory_list — require namespace in schema + runtime check
-patch("21b: MCP list require namespace",
+# 21b: MCP memory_list — update description + default to 'all' (read-only discovery, like search)
+# Per ADR-050: read-only discovery ops default to 'all'; write ops require explicit namespace.
+patch("21b: MCP list namespace description",
     MCP_MEMORY,
-    """                namespace: { type: 'string', description: 'Filter by namespace' },
-                limit: { type: 'number', description: 'Maximum results (default: 50)' },
-                offset: { type: 'number', description: 'Offset for pagination (default: 0)' },
-            },
-        },""",
-    """                namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
-                limit: { type: 'number', description: 'Maximum results (default: 50)' },
-                offset: { type: 'number', description: 'Offset for pagination (default: 0)' },
-            },
-            required: ['namespace'],
-        },""")
+    "namespace: { type: 'string', description: 'Filter by namespace' },",
+    "namespace: { type: 'string', description: 'Namespace to list (default: \"all\" = all namespaces)' },")
 
-patch("21b: MCP list namespace check",
+patch("21b: MCP list namespace default all",
     MCP_MEMORY,
     "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace;\n            const limit = input.limit || 50;",
-    "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }\n            const limit = input.limit || 50;")
+    "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace || 'all';\n            const limit = input.limit || 50;")
 
 # 21c: CLI memory retrieve — remove default: 'default' + add namespace check
 patch("21c: CLI retrieve remove default",
@@ -601,11 +606,12 @@ patch("21c: CLI retrieve namespace check",
         }
         // Use sql.js directly for consistent data access""")
 
-# 21d: CLI memory list — add namespace check
-patch("21d: CLI list namespace check",
+# 21d: CLI memory list — default to 'all' (read-only discovery, like search)
+# Per ADR-050: read-only discovery ops default to 'all'; write ops require explicit namespace.
+patch("21d: CLI list namespace default all",
     CLI_MEMORY,
     "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        // Use sql.js directly for consistent data access",
-    "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        if (!namespace) {\n            output.printError('Namespace is required. Use --namespace or -n (e.g. \"patterns\", \"solutions\", \"tasks\")');\n            return { success: false, exitCode: 1 };\n        }\n        // Use sql.js directly for consistent data access")
+    "        const namespace = ctx.flags.namespace || 'all';\n        const limit = ctx.flags.limit;\n        // Use sql.js directly for consistent data access")
 
 # ── Patch 22: searchEntries() default namespace = 'all' (ADR-050) ──
 # ADR-050 Intelligence Loop: "memory_search(query='task keywords') → Find similar patterns"
@@ -652,6 +658,22 @@ patch("23: deleteEntry no default namespace",
     MI,
     "export async function deleteEntry(options) {\n    const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
     "export async function deleteEntry(options) {\n    const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('deleteEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
+
+# ── Patch 24: listEntries() 'all' namespace support ──
+# listEntries used truthiness (namespace ?) not !== 'all' check.
+# Passing 'all' would generate WHERE namespace = 'all' → returns nothing.
+# Fix: use nsFilter = namespace && namespace !== 'all' (same pattern as searchEntries).
+
+# Patch 24 uses line-based approach since template literals clash with Python heredoc
+patch("24a: listEntries nsFilter variable",
+    MI,
+    "        // Get total count\n        const countQuery = namespace",
+    "        // Get total count\n        const nsFilter = namespace && namespace !== 'all';\n        const countQuery = nsFilter")
+
+patch("24b: listEntries listQuery all support",
+    MI,
+    "        ${namespace ? `AND namespace",
+    "        ${nsFilter ? `AND namespace")
 
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
