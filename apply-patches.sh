@@ -412,5 +412,23 @@ patch("12: real consolidate worker",
 
 # ── Patch 13: DELETED (ultralearn is headless/AI-powered per ADR-020, not local WASM) ──
 
+# ── Patch 19: MCP memory_search namespace default ──
+# Bug: MCP defaults to namespace='default', CLI defaults to 'all'.
+# All entries are in 'patterns' namespace, so MCP search always returns 0.
+# Threshold stays at 0.3 — matches CLI (memory.js:266), searchEntries() (memory-initializer.js:1615),
+# and is consistent with ADR-024 embeddings/search using 0.5.
+# See: https://github.com/ruvnet/claude-flow/issues/1131
+MCP_MEMORY = base + "/mcp-tools/memory-tools.js"
+
+patch("19: MCP search namespace default",
+    MCP_MEMORY,
+    "const namespace = input.namespace || 'default';",
+    "const namespace = input.namespace || 'all';")
+
+patch("19: MCP search namespace description",
+    MCP_MEMORY,
+    """namespace: { type: 'string', description: 'Namespace to search (default: "default")' }""",
+    """namespace: { type: 'string', description: 'Namespace to search (default: "all" = all namespaces)' }""")
+
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
