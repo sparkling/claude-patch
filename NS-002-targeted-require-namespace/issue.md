@@ -1,6 +1,6 @@
 # NS-002: Store/delete/retrieve fall back to 'default' + accept 'all'
 **Severity**: Critical
-**GitHub**: [#581](https://github.com/ruvnet/claude-flow/issues/581), [#1137](https://github.com/ruvnet/claude-flow/issues/1137), [#1135](https://github.com/ruvnet/claude-flow/issues/1135)
+**GitHub**: [#581](https://github.com/ruvnet/claude-flow/issues/581)
 ## Root Cause
 MCP/CLI/Core used `namespace || 'default'`, silently routing entries to wrong namespace. Also accepted 'all' (search/list sentinel) as a write namespace, creating invisible entries.
 ## Rule

@@ -1,5 +1,6 @@
 # CF-001: Doctor ignores YAML config files
 **Severity**: Low
+**GitHub**: [#1141](https://github.com/ruvnet/claude-flow/issues/1141)
 ## Root Cause
 `checkConfigFile()` only checks `.json` paths, but `claude-flow init` generates `config.yaml`. Also, `JSON.parse()` runs on all config content, crashing on YAML.
 ## Fix

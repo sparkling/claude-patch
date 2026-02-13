@@ -1,5 +1,6 @@
 # DM-004: Preload worker stub + missing from defaults
 **Severity**: Enhancement
+**GitHub**: [#1139](https://github.com/ruvnet/claude-flow/issues/1139)
 ## Root Cause
 The `preload` worker type exists in the switch statement but was missing from `DEFAULT_WORKERS` — never scheduled. The `runPreloadWorkerLocal()` was a stub returning `{resourcesPreloaded: 0}`. Also missing: ultralearn, deepdive, refactor, benchmark workers.
 ## Fix

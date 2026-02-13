@@ -1,5 +1,6 @@
 # CF-002: Config export shows hardcoded defaults
 **Severity**: Medium
+**GitHub**: [#1142](https://github.com/ruvnet/claude-flow/issues/1142)
 ## Root Cause
 `config export` and `config get` use hardcoded defaults (topology: 'hybrid', cacheSize: 256) instead of reading `.claude-flow/config.yaml`. The commands are misleading when the project has custom config.
 ## Fix
