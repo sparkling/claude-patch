@@ -490,7 +490,7 @@ patch("20a: MCP store require namespace",
 patch("20b: MCP store namespace no fallback",
     MCP_MEMORY,
     "const namespace = input.namespace || 'default';\n            const value = typeof",
-    "const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }\n            const value = typeof")
+    "const namespace = input.namespace;\n            if (!namespace || namespace === 'all') {\n                throw new Error('Namespace is required (cannot be \"all\"). Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }\n            const value = typeof")
 
 # 20c: MCP delete — add 'namespace' to required + update description
 patch("20c: MCP delete require namespace",
@@ -518,7 +518,7 @@ patch("20c: MCP delete require namespace",
 patch("20d: MCP delete namespace no fallback",
     MCP_MEMORY,
     "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
-    "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
+    "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace || namespace === 'all') {\n                throw new Error('Namespace is required (cannot be \"all\"). Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
 
 # 20e: CLI store — add namespace-required check after key check
 patch("20e: CLI store require namespace",
@@ -532,8 +532,8 @@ patch("20e: CLI store require namespace",
             output.printError('Key is required. Use --key or -k');
             return { success: false, exitCode: 1 };
         }
-        if (!namespace) {
-            output.printError('Namespace is required. Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+        if (!namespace || namespace === 'all') {
+            output.printError('Namespace is required (cannot be "all"). Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
             return { success: false, exitCode: 1 };
         }
         if (!value && ctx.interactive) {""")
@@ -554,8 +554,8 @@ patch("20g: CLI delete namespace check",
     """            output.printError('Key is required. Use: memory delete -k "key" -n "namespace"');
             return { success: false, exitCode: 1 };
         }
-        if (!namespace) {
-            output.printError('Namespace is required. Use: memory delete -k "key" -n "namespace" (e.g. "patterns", "solutions", "tasks")');
+        if (!namespace || namespace === 'all') {
+            output.printError('Namespace is required (cannot be "all"). Use: memory delete -k "key" -n "namespace" (e.g. "patterns", "solutions", "tasks")');
             return { success: false, exitCode: 1 };
         }
         if (!force && ctx.interactive) {""")
@@ -564,13 +564,13 @@ patch("20g: CLI delete namespace check",
 patch("20h: storeEntry no default namespace",
     MI,
     "const { key, value, namespace = 'default', generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;",
-    "const { key, value, namespace, generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;\n    if (!namespace) throw new Error('storeEntry: namespace is required');")
+    "const { key, value, namespace, generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;\n    if (!namespace || namespace === 'all') throw new Error('storeEntry: namespace is required (cannot be \"all\")');")
 
 # 20i: Core deleteEntry() — remove dead 'default' parameter default + throw
 patch("20i: deleteEntry no default namespace",
     MI,
     "export async function deleteEntry(options) {\n    const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
-    "export async function deleteEntry(options) {\n    const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('deleteEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
+    "export async function deleteEntry(options) {\n    const { key, namespace, dbPath: customPath } = options;\n    if (!namespace || namespace === 'all') throw new Error('deleteEntry: namespace is required (cannot be \"all\")');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
 
 # ── Patch 21: Read Ops Namespace Enforcement (Problem C) ─────────────────
 # retrieve fell back to 'default', returning nothing when entries are in
@@ -606,7 +606,7 @@ patch("21a: MCP retrieve require namespace",
 patch("21b: MCP retrieve namespace no fallback",
     MCP_MEMORY,
     "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
-    "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
+    "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace || namespace === 'all') {\n                throw new Error('Namespace is required (cannot be \"all\"). Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
 
 # 21c: MCP list — update description to reflect 'all' default
 patch("21c: MCP list namespace description",
@@ -638,8 +638,8 @@ patch("21f: CLI retrieve namespace check",
             output.printError('Key is required');
             return { success: false, exitCode: 1 };
         }
-        if (!namespace) {
-            output.printError('Namespace is required. Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+        if (!namespace || namespace === 'all') {
+            output.printError('Namespace is required (cannot be "all"). Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
             return { success: false, exitCode: 1 };
         }
         // Use sql.js directly for consistent data access""")
@@ -654,7 +654,7 @@ patch("21g: CLI list namespace default all",
 patch("21h: getEntry no default namespace",
     MI,
     "const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
-    "const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('getEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
+    "const { key, namespace, dbPath: customPath } = options;\n    if (!namespace || namespace === 'all') throw new Error('getEntry: namespace is required (cannot be \"all\")');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
 
 # 21i: Core listEntries() — use nsFilter variable instead of truthiness check
 # Without this, passing 'all' generates WHERE namespace = 'all' → 0 results
@@ -692,6 +692,116 @@ patch("22d: hooks pattern-search note",
     MCP_HOOKS,
     'namespace "pattern".',
     'namespace "patterns".')
+
+# ── Patch 23: Block 'all' as Store/Delete/Retrieve Namespace (Problem E) ──
+# 'all' is a reserved sentinel for "all namespaces" in search/list.
+# Storing/deleting/retrieving with namespace='all' creates invisible entries.
+
+# 23a: MCP store — block namespace='all'
+patch("23a: MCP store block namespace all",
+    MCP_MEMORY,
+    """const { storeEntry } = await getMemoryFunctions();
+            const key = input.key;
+            const namespace = input.namespace;
+            if (!namespace) {
+                throw new Error('Namespace is required. Use namespace: "patterns", "solutions", or "tasks"');
+            }""",
+    """const { storeEntry } = await getMemoryFunctions();
+            const key = input.key;
+            const namespace = input.namespace;
+            if (!namespace || namespace === 'all') {
+                throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+            }""")
+
+# 23b: MCP retrieve — block namespace='all'
+patch("23b: MCP retrieve block namespace all",
+    MCP_MEMORY,
+    """const { getEntry } = await getMemoryFunctions();
+            const key = input.key;
+            const namespace = input.namespace;
+            if (!namespace) {
+                throw new Error('Namespace is required. Use namespace: "patterns", "solutions", or "tasks"');
+            }""",
+    """const { getEntry } = await getMemoryFunctions();
+            const key = input.key;
+            const namespace = input.namespace;
+            if (!namespace || namespace === 'all') {
+                throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+            }""")
+
+# 23c: MCP delete — block namespace='all'
+patch("23c: MCP delete block namespace all",
+    MCP_MEMORY,
+    """const { deleteEntry } = await getMemoryFunctions();
+            const key = input.key;
+            const namespace = input.namespace;
+            if (!namespace) {
+                throw new Error('Namespace is required. Use namespace: "patterns", "solutions", or "tasks"');
+            }""",
+    """const { deleteEntry } = await getMemoryFunctions();
+            const key = input.key;
+            const namespace = input.namespace;
+            if (!namespace || namespace === 'all') {
+                throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+            }""")
+
+# 23d: CLI store — block namespace='all'
+patch("23d: CLI store block namespace all",
+    CLI_MEMORY,
+    """        if (!namespace) {
+            output.printError('Namespace is required. Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        if (!value && ctx.interactive) {""",
+    """        if (!namespace || namespace === 'all') {
+            output.printError('Namespace is required (cannot be "all"). Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        if (!value && ctx.interactive) {""")
+
+# 23e: CLI retrieve — block namespace='all'
+patch("23e: CLI retrieve block namespace all",
+    CLI_MEMORY,
+    """        if (!namespace) {
+            output.printError('Namespace is required. Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        // Use sql.js directly for consistent data access""",
+    """        if (!namespace || namespace === 'all') {
+            output.printError('Namespace is required (cannot be "all"). Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        // Use sql.js directly for consistent data access""")
+
+# 23f: CLI delete — block namespace='all'
+patch("23f: CLI delete block namespace all",
+    CLI_MEMORY,
+    """        if (!namespace) {
+            output.printError('Namespace is required. Use: memory delete -k "key" -n "namespace" (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }""",
+    """        if (!namespace || namespace === 'all') {
+            output.printError('Namespace is required (cannot be "all"). Use: memory delete -k "key" -n "namespace" (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }""")
+
+# 23g: Core storeEntry() — block namespace='all'
+patch("23g: storeEntry block namespace all",
+    MI,
+    "if (!namespace) throw new Error('storeEntry: namespace is required');",
+    "if (!namespace || namespace === 'all') throw new Error('storeEntry: namespace is required (cannot be \"all\")');")
+
+# 23h: Core getEntry() — block namespace='all'
+patch("23h: getEntry block namespace all",
+    MI,
+    "if (!namespace) throw new Error('getEntry: namespace is required');",
+    "if (!namespace || namespace === 'all') throw new Error('getEntry: namespace is required (cannot be \"all\")');")
+
+# 23i: Core deleteEntry() — block namespace='all'
+patch("23i: deleteEntry block namespace all",
+    MI,
+    "if (!namespace) throw new Error('deleteEntry: namespace is required');",
+    "if (!namespace || namespace === 'all') throw new Error('deleteEntry: namespace is required (cannot be \"all\")');")
 
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF

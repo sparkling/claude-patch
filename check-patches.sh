@@ -24,7 +24,8 @@ if grep -q "embeddings.json" "$MEMORY" 2>/dev/null \
    && grep -q "all namespaces" "$MCP_TOOLS_DIR/memory-tools.js" 2>/dev/null \
    && grep -q "Namespace is required" "$MCP_TOOLS_DIR/memory-tools.js" 2>/dev/null \
    && grep -q "nsFilter" "$MEMORY" 2>/dev/null \
-   && grep -q "|| 'patterns'" "$MCP_TOOLS_DIR/hooks-tools.js" 2>/dev/null; then
+   && grep -q "|| 'patterns'" "$MCP_TOOLS_DIR/hooks-tools.js" 2>/dev/null \
+   && grep -q "cannot be .all." "$MCP_TOOLS_DIR/memory-tools.js" 2>/dev/null; then
   echo "[PATCHES] OK: All patches verified (v$VERSION)"
   exit 0
 fi

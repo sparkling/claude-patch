@@ -1001,6 +1001,24 @@ The MCP layer uniformly used `|| 'default'` for namespace fallbacks, but entries
 | 22c | hooks-tools.js | pattern-search description updated |
 | 22d | hooks-tools.js | pattern-search note updated |
 
+### Patch 23: Block 'all' as Store/Delete/Retrieve Namespace (Problem E) — 9 ops
+
+**Root cause:** `'all'` is a reserved sentinel value used by search and list to mean "all namespaces". But store/delete/retrieve accept `'all'` as a literal namespace, creating entries that are invisible to filtered search but appear in cross-namespace results.
+
+**Fix:** Expand every `if (!namespace)` check to `if (!namespace || namespace === 'all')` on store, delete, and retrieve ops. Error message updated to say `(cannot be "all")`.
+
+| Op | File | Change |
+|----|------|--------|
+| 23a | memory-tools.js | MCP store handler: `!namespace` → `!namespace \|\| namespace === 'all'` |
+| 23b | memory-tools.js | MCP retrieve handler: same |
+| 23c | memory-tools.js | MCP delete handler: same |
+| 23d | memory.js | CLI store: same |
+| 23e | memory.js | CLI retrieve: same |
+| 23f | memory.js | CLI delete: same |
+| 23g | memory-initializer.js | `storeEntry()`: same |
+| 23h | memory-initializer.js | `getEntry()`: same |
+| 23i | memory-initializer.js | `deleteEntry()`: same |
+
 ### Design Basis
 
 | Rule | ADR/Signal |
@@ -1011,6 +1029,7 @@ The MCP layer uniformly used `|| 'default'` for namespace fallbacks, but entries
 | Delete requires namespace | ADR-006 (analogous to store) |
 | Retrieve requires namespace | ADR-006 (targeted lookup, not discovery) |
 | Core functions throw | Dead defaults were a landmine for new callers |
+| `'all'` blocked on write/targeted-read | `'all'` is reserved sentinel for search/list; storing in it creates invisible entries |
 
 **Note:** Previous patch comments referenced "ADR-050" for namespace rules. ADR-050 is not a formal ADR — it exists only as inline code labels for the Intelligence Layer/Loop system. The actual design basis is ADR-006 (namespace required on MemoryEntry) + README Intelligence Loop examples.
 
