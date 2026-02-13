@@ -633,5 +633,25 @@ patch_all("22: embeddings metadata namespace all",
     "namespace: namespace || 'default',",
     "namespace: namespace || 'all',")
 
+# ── Patch 23: Remove 'default' fallback from core functions ──
+# storeEntry, getEntry, deleteEntry had namespace='default' as function defaults.
+# With callers now throwing before reaching these, the defaults were dead code —
+# but a landmine for any new caller that skips validation. Remove and throw.
+
+patch("23: storeEntry no default namespace",
+    MI,
+    "const { key, value, namespace = 'default', generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;",
+    "const { key, value, namespace, generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;\n    if (!namespace) throw new Error('storeEntry: namespace is required');")
+
+patch("23: getEntry no default namespace",
+    MI,
+    "const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
+    "const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('getEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
+
+patch("23: deleteEntry no default namespace",
+    MI,
+    "export async function deleteEntry(options) {\n    const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
+    "export async function deleteEntry(options) {\n    const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('deleteEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
+
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
