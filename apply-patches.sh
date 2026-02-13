@@ -539,5 +539,73 @@ patch("20g: hooks pattern-search note",
     'namespace "pattern".',
     'namespace "patterns".')
 
+# ── Patch 21: Enforce --namespace on read ops (retrieve + list) ──
+# Consistent with Patch 20: all memory ops require explicit namespace.
+# Prevents silent reads from wrong namespace returning false negatives.
+
+# 21a: MCP memory_retrieve — require namespace in schema + runtime check
+patch("21a: MCP retrieve require namespace",
+    MCP_MEMORY,
+    """                namespace: { type: 'string', description: 'Namespace (default: "default")' },
+            },
+            required: ['key'],""",
+    """                namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
+            },
+            required: ['key', 'namespace'],""")
+
+patch("21a: MCP retrieve namespace no fallback",
+    MCP_MEMORY,
+    "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
+    "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
+
+# 21b: MCP memory_list — require namespace in schema + runtime check
+patch("21b: MCP list require namespace",
+    MCP_MEMORY,
+    """                namespace: { type: 'string', description: 'Filter by namespace' },
+                limit: { type: 'number', description: 'Maximum results (default: 50)' },
+                offset: { type: 'number', description: 'Offset for pagination (default: 0)' },
+            },
+        },""",
+    """                namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
+                limit: { type: 'number', description: 'Maximum results (default: 50)' },
+                offset: { type: 'number', description: 'Offset for pagination (default: 0)' },
+            },
+            required: ['namespace'],
+        },""")
+
+patch("21b: MCP list namespace check",
+    MCP_MEMORY,
+    "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace;\n            const limit = input.limit || 50;",
+    "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }\n            const limit = input.limit || 50;")
+
+# 21c: CLI memory retrieve — remove default: 'default' + add namespace check
+patch("21c: CLI retrieve remove default",
+    CLI_MEMORY,
+    "            type: 'string',\n            default: 'default'\n        }\n    ],\n    action: async (ctx) => {\n        const key = ctx.flags.key || ctx.args[0];\n        const namespace = ctx.flags.namespace;\n        if (!key) {\n            output.printError('Key is required');",
+    "            type: 'string'\n        }\n    ],\n    action: async (ctx) => {\n        const key = ctx.flags.key || ctx.args[0];\n        const namespace = ctx.flags.namespace;\n        if (!key) {\n            output.printError('Key is required');")
+
+patch("21c: CLI retrieve namespace check",
+    CLI_MEMORY,
+    """        if (!key) {
+            output.printError('Key is required');
+            return { success: false, exitCode: 1 };
+        }
+        // Use sql.js directly for consistent data access""",
+    """        if (!key) {
+            output.printError('Key is required');
+            return { success: false, exitCode: 1 };
+        }
+        if (!namespace) {
+            output.printError('Namespace is required. Use --namespace or -n (e.g. "patterns", "solutions", "tasks")');
+            return { success: false, exitCode: 1 };
+        }
+        // Use sql.js directly for consistent data access""")
+
+# 21d: CLI memory list — add namespace check
+patch("21d: CLI list namespace check",
+    CLI_MEMORY,
+    "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        // Use sql.js directly for consistent data access",
+    "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        if (!namespace) {\n            output.printError('Namespace is required. Use --namespace or -n (e.g. \"patterns\", \"solutions\", \"tasks\")');\n            return { success: false, exitCode: 1 };\n        }\n        // Use sql.js directly for consistent data access")
+
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
