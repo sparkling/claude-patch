@@ -607,5 +607,31 @@ patch("21d: CLI list namespace check",
     "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        // Use sql.js directly for consistent data access",
     "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        if (!namespace) {\n            output.printError('Namespace is required. Use --namespace or -n (e.g. \"patterns\", \"solutions\", \"tasks\")');\n            return { success: false, exitCode: 1 };\n        }\n        // Use sql.js directly for consistent data access")
 
+# ── Patch 22: searchEntries() default namespace = 'all' (ADR-050) ──
+# ADR-050 Intelligence Loop: "memory_search(query='task keywords') → Find similar patterns"
+# No namespace on search = broad discovery across all namespaces.
+# Fixes inconsistency: function defaulted to 'default' while CLI/MCP overrode to 'all'.
+# Now the source of truth is in the function itself.
+
+MI = memory + "/memory-initializer.js"
+EMB_TOOLS = base + "/mcp-tools/embeddings-tools.js"
+
+patch("22: searchEntries default all",
+    MI,
+    "const { query, namespace = 'default', limit = 10, threshold = 0.3, dbPath: customPath } = options;",
+    "const { query, namespace = 'all', limit = 10, threshold = 0.3, dbPath: customPath } = options;")
+
+# embeddings-tools.js search call passes namespace to searchEntries
+patch("22: embeddings search namespace all",
+    EMB_TOOLS,
+    "namespace: namespace || 'default'\n                });",
+    "namespace: namespace || 'all'\n                });")
+
+# embeddings-tools.js metadata display (2 occurrences)
+patch_all("22: embeddings metadata namespace all",
+    EMB_TOOLS,
+    "namespace: namespace || 'default',",
+    "namespace: namespace || 'all',")
+
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF
