@@ -929,3 +929,95 @@ npx @claude-flow/cli@latest neural status
 - ✅ npx cache: `~/.npm/_npx/85fb20e3e7e3a233/node_modules/@claude-flow/cli/dist/src/commands/neural.js`
 
 ---
+
+## Patches 19-22: Memory Namespace Enforcement
+
+**Files:** `mcp-tools/memory-tools.js`, `mcp-tools/hooks-tools.js`, `mcp-tools/embeddings-tools.js`, `commands/memory.js`, `memory/memory-initializer.js`
+**Issues:** [#1131](https://github.com/ruvnet/claude-flow/issues/1131), [#581](https://github.com/ruvnet/claude-flow/issues/581)
+
+The MCP layer uniformly used `|| 'default'` for namespace fallbacks, but entries are stored in named namespaces (`'patterns'`, `'solutions'`, `'tasks'`). The CLI already had `|| 'all'` for search; `searchEntries()` already had a `!== 'all'` sentinel check. These patches bring MCP + CLI + Core into alignment with ADR-006 (`namespace: string` is required on `MemoryEntry`) and README examples (search without namespace, store with explicit namespace).
+
+### Patch 19: Search Namespace Mismatch (Problem A) — 5 ops
+
+**Root cause:** MCP `memory_search` defaulted to `namespace='default'`, but entries live in `'patterns'`, `'solutions'`, etc. Every MCP search returned 0 results.
+
+**Fix:** MCP search, core `searchEntries()`, and embeddings search all default to `'all'`.
+
+| Op | File | Change |
+|----|------|--------|
+| 19a | memory-tools.js | MCP search handler: `\|\| 'default'` → `\|\| 'all'` |
+| 19b | memory-tools.js | MCP search schema description updated |
+| 19c | memory-initializer.js | `searchEntries()` function default `'default'` → `'all'` |
+| 19d | embeddings-tools.js | Embeddings search passes `'all'` not `'default'` |
+| 19e | embeddings-tools.js | Embeddings metadata fallback (all occurrences) |
+
+### Patch 20: Write Ops Require Explicit Namespace (Problem B) — 9 ops
+
+**Root cause:** `store`/`delete` fell back to `namespace || 'default'`, silently putting entries in the wrong namespace. ADR-006 defines `namespace: string` as required.
+
+**Fix:** MCP schema marks namespace required + handler throws if missing. CLI store/delete require explicit `--namespace` flag. Core `storeEntry()`/`deleteEntry()` throw if namespace not provided.
+
+| Op | File | Change |
+|----|------|--------|
+| 20a | memory-tools.js | MCP store schema: add `'namespace'` to required |
+| 20b | memory-tools.js | MCP store handler: remove `\|\| 'default'`, add throw |
+| 20c | memory-tools.js | MCP delete schema: add `'namespace'` to required, fix description |
+| 20d | memory-tools.js | MCP delete handler: remove `\|\| 'default'`, add throw |
+| 20e | memory.js | CLI store: add `--namespace` required check |
+| 20f | memory.js | CLI delete: remove `\|\| 'default'` fallback |
+| 20g | memory.js | CLI delete: add `--namespace` required check |
+| 20h | memory-initializer.js | `storeEntry()`: remove dead `'default'` param default, throw |
+| 20i | memory-initializer.js | `deleteEntry()`: remove dead `'default'` param default, throw |
+
+### Patch 21: Read Ops Namespace Enforcement (Problem C) — 10 ops
+
+**Root cause:** `retrieve` fell back to `'default'`, returning nothing when entries are in `'patterns'`. `list` had no `'all'` support — truthiness check treated `'all'` as truthy → `WHERE namespace = 'all'` → 0 results.
+
+**Fix:** `retrieve` requires explicit namespace (targeted lookup, like store/delete). `list` defaults to `'all'` (read-only discovery, like search). Core `getEntry()` throws if no namespace. `listEntries()` uses `nsFilter` variable.
+
+| Op | File | Change |
+|----|------|--------|
+| 21a | memory-tools.js | MCP retrieve schema: add `'namespace'` to required, fix description |
+| 21b | memory-tools.js | MCP retrieve handler: remove `\|\| 'default'`, add throw |
+| 21c | memory-tools.js | MCP list schema: update description for `'all'` default |
+| 21d | memory-tools.js | MCP list handler: add `\|\| 'all'` fallback |
+| 21e | memory.js | CLI retrieve: remove `default: 'default'` from flag |
+| 21f | memory.js | CLI retrieve: add `--namespace` required check |
+| 21g | memory.js | CLI list: add `\|\| 'all'` default |
+| 21h | memory-initializer.js | `getEntry()`: remove dead `'default'` param default, throw |
+| 21i | memory-initializer.js | `listEntries()`: introduce `nsFilter` variable |
+| 21j | memory-initializer.js | `listEntries()`: use `nsFilter` in list query |
+
+### Patch 22: Namespace Typo Fix (Problem D) — 4 ops
+
+**Root cause:** `hooks-tools.js` used singular `'pattern'` in 4 locations while every other file uses `'patterns'` (plural).
+
+**Fix:** Replace all 4 occurrences with `'patterns'`.
+
+| Op | File | Change |
+|----|------|--------|
+| 22a | hooks-tools.js | pattern-store handler: `'pattern'` → `'patterns'` |
+| 22b | hooks-tools.js | pattern-search default: `\|\| 'pattern'` → `\|\| 'patterns'` |
+| 22c | hooks-tools.js | pattern-search description updated |
+| 22d | hooks-tools.js | pattern-search note updated |
+
+### Design Basis
+
+| Rule | ADR/Signal |
+|------|-----------|
+| Search defaults to `'all'` | ADR-006 (namespace required), README examples (search without namespace), CLI already had `\|\| 'all'` |
+| List defaults to `'all'` | Read-only discovery, both CLI and MCP already passed `undefined` → listed all |
+| Store requires namespace | ADR-006 (`namespace: string` required), README shows explicit `namespace="patterns"` |
+| Delete requires namespace | ADR-006 (analogous to store) |
+| Retrieve requires namespace | ADR-006 (targeted lookup, not discovery) |
+| Core functions throw | Dead defaults were a landmine for new callers |
+
+**Note:** Previous patch comments referenced "ADR-050" for namespace rules. ADR-050 is not a formal ADR — it exists only as inline code labels for the Intelligence Layer/Loop system. The actual design basis is ADR-006 (namespace required on MemoryEntry) + README Intelligence Loop examples.
+
+### Status: Applied (npx cache)
+
+**Applied to:**
+- ✅ npx cache: `~/.npm/_npx/85fb20e3e7e3a233/node_modules/@claude-flow/cli/dist/src/`
+- 4 files patched: `mcp-tools/memory-tools.js`, `mcp-tools/hooks-tools.js`, `mcp-tools/embeddings-tools.js`, `commands/memory.js`, `memory/memory-initializer.js`
+
+---

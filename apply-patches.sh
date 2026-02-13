@@ -412,46 +412,87 @@ patch("12: real consolidate worker",
 
 # ── Patch 13: DELETED (ultralearn is headless/AI-powered per ADR-020, not local WASM) ──
 
-# ── Patch 19: MCP memory_search namespace default ──
-# Bug: MCP defaults to namespace='default', CLI defaults to 'all'.
-# All entries are in 'patterns' namespace, so MCP search always returns 0.
-# Threshold stays at 0.3 — matches CLI (memory.js:266), searchEntries() (memory-initializer.js:1615),
-# and is consistent with ADR-024 embeddings/search using 0.5.
-# See: https://github.com/ruvnet/claude-flow/issues/1131
+# ════════════════════════════════════════════════════════════════════════════
+# Memory Namespace Enforcement (Issue #1131, #581)
+#
+# The MCP layer uniformly used `|| 'default'` for namespace fallbacks, but
+# entries are stored in named namespaces ('patterns', 'solutions', 'tasks').
+# The CLI already had `|| 'all'` for search; searchEntries() already had a
+# `!== 'all'` sentinel check. These patches bring MCP + CLI + Core into
+# alignment with ADR-006 (namespace: string is required on MemoryEntry) and
+# README examples (search without namespace, store with explicit namespace).
+#
+# 4 problems, 4 patches:
+#   19) Search returns 0 results — MCP/Core/Embeddings default → 'all'
+#   20) Write ops silently misroute — store/delete require explicit namespace
+#   21) Read ops return wrong results — retrieve requires ns; list defaults 'all'
+#   22) Namespace typo — 'pattern' → 'patterns' in hooks-tools.js
+# ════════════════════════════════════════════════════════════════════════════
+
 MCP_MEMORY = base + "/mcp-tools/memory-tools.js"
 MCP_HOOKS = base + "/mcp-tools/hooks-tools.js"
 CLI_MEMORY = commands + "/memory.js"
+EMB_TOOLS = base + "/mcp-tools/embeddings-tools.js"
 
-# Use unique context (const query) to target memory_search specifically, not memory_store
-patch("19: MCP search namespace default",
+# ── Patch 19: Search Namespace Mismatch (Problem A) ──────────────────────
+# MCP memory_search defaulted to namespace='default', but entries live in
+# 'patterns', 'solutions', etc. The CLI already had || 'all' and
+# searchEntries() already had a !== 'all' sentinel — MCP was the outlier.
+# Threshold stays at 0.3 (matches CLI, searchEntries, consistent with ADR-024).
+# See: https://github.com/ruvnet/claude-flow/issues/1131
+
+# 19a: MCP search handler — change default from 'default' to 'all'
+# Uses unique context (const query) to target memory_search, not memory_store
+patch("19a: MCP search namespace default",
     MCP_MEMORY,
     "const query = input.query;\n            const namespace = input.namespace || 'default';",
     "const query = input.query;\n            const namespace = input.namespace || 'all';")
 
-patch("19: MCP search namespace description",
+# 19b: MCP search schema — update description to reflect 'all' default
+patch("19b: MCP search namespace description",
     MCP_MEMORY,
     """namespace: { type: 'string', description: 'Namespace to search (default: "default")' }""",
     """namespace: { type: 'string', description: 'Namespace to search (default: "all" = all namespaces)' }""")
 
-# ── Patch 20: Enforce --namespace on write ops + fix 'pattern' typo ──
-# Makes namespace required on store/delete to prevent silent misrouting to 'default'.
-# Fixes inconsistent 'pattern' (singular) vs 'patterns' (plural) in hooks-tools.js.
-# See: https://github.com/ruvnet/claude-flow/issues/1131
+# 19c: Core searchEntries() — change function default from 'default' to 'all'
+# The function already had !== 'all' logic at line 1620; the default was wrong.
+patch("19c: searchEntries default all",
+    MI,
+    "const { query, namespace = 'default', limit = 10, threshold = 0.3, dbPath: customPath } = options;",
+    "const { query, namespace = 'all', limit = 10, threshold = 0.3, dbPath: customPath } = options;")
 
-# 20a: MCP memory_store — require namespace in schema (unique pattern)
+# 19d: Embeddings search — pass 'all' instead of 'default' to searchEntries
+patch("19d: embeddings search namespace all",
+    EMB_TOOLS,
+    "namespace: namespace || 'default'\n                });",
+    "namespace: namespace || 'all'\n                });")
+
+# 19e: Embeddings metadata — all occurrences of namespace fallback
+patch_all("19e: embeddings metadata namespace all",
+    EMB_TOOLS,
+    "namespace: namespace || 'default',",
+    "namespace: namespace || 'all',")
+
+# ── Patch 20: Write Ops Require Explicit Namespace (Problem B) ───────────
+# store/delete fell back to namespace || 'default', silently putting entries
+# in the wrong namespace. ADR-006 defines namespace: string as required on
+# MemoryEntry — the fallback was a bug, not a feature.
+# See: https://github.com/ruvnet/claude-flow/issues/581
+
+# 20a: MCP store — add 'namespace' to required fields in schema
 patch("20a: MCP store require namespace",
     MCP_MEMORY,
     "required: ['key', 'value'],",
     "required: ['key', 'value', 'namespace'],")
 
-# 20b: MCP memory_store — remove || 'default' fallback + add runtime check
-# (MCP framework does NOT enforce 'required' server-side, so handler must check)
+# 20b: MCP store — remove || 'default' fallback + add runtime throw
+# (MCP framework does NOT enforce 'required' server-side)
 patch("20b: MCP store namespace no fallback",
     MCP_MEMORY,
     "const namespace = input.namespace || 'default';\n            const value = typeof",
     "const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }\n            const value = typeof")
 
-# 20c: MCP memory_delete — require namespace + update description
+# 20c: MCP delete — add 'namespace' to required + update description
 patch("20c: MCP delete require namespace",
     MCP_MEMORY,
     """        description: 'Delete a memory entry by key',
@@ -473,13 +514,13 @@ patch("20c: MCP delete require namespace",
             },
             required: ['key', 'namespace'],""")
 
-# 20d: MCP memory_delete — remove || 'default' fallback + add runtime check
+# 20d: MCP delete — remove || 'default' fallback + add runtime throw
 patch("20d: MCP delete namespace no fallback",
     MCP_MEMORY,
     "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
     "const { deleteEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
 
-# 20e: CLI memory store — add namespace-required check after key check
+# 20e: CLI store — add namespace-required check after key check
 patch("20e: CLI store require namespace",
     CLI_MEMORY,
     """        if (!key) {
@@ -497,13 +538,14 @@ patch("20e: CLI store require namespace",
         }
         if (!value && ctx.interactive) {""")
 
-# 20f: CLI memory delete — remove || 'default' fallback and add namespace check
+# 20f: CLI delete — remove || 'default' fallback and fix error message
 patch("20f: CLI delete namespace no fallback",
     CLI_MEMORY,
     "const namespace = ctx.flags.namespace || 'default';\n        const force = ctx.flags.force;\n        if (!key) {\n            output.printError('Key is required. Use: memory delete -k \"key\" [-n \"namespace\"]');",
     "const namespace = ctx.flags.namespace;\n        const force = ctx.flags.force;\n        if (!key) {\n            output.printError('Key is required. Use: memory delete -k \"key\" -n \"namespace\"');")
 
-patch("20f: CLI delete namespace check",
+# 20g: CLI delete — add namespace-required check (depends on 20f's new error msg)
+patch("20g: CLI delete namespace check",
     CLI_MEMORY,
     """            output.printError('Key is required. Use: memory delete -k "key" -n "namespace"');
             return { success: false, exitCode: 1 };
@@ -518,33 +560,27 @@ patch("20f: CLI delete namespace check",
         }
         if (!force && ctx.interactive) {""")
 
-# 20g: hooks-tools.js — fix 'pattern' (singular) → 'patterns' (plural)
-patch("20g: hooks pattern-store namespace",
-    MCP_HOOKS,
-    "namespace: 'pattern',",
-    "namespace: 'patterns',")
+# 20h: Core storeEntry() — remove dead 'default' parameter default + throw
+patch("20h: storeEntry no default namespace",
+    MI,
+    "const { key, value, namespace = 'default', generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;",
+    "const { key, value, namespace, generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;\n    if (!namespace) throw new Error('storeEntry: namespace is required');")
 
-patch("20g: hooks pattern-search default",
-    MCP_HOOKS,
-    "const namespace = params.namespace || 'pattern';",
-    "const namespace = params.namespace || 'patterns';")
+# 20i: Core deleteEntry() — remove dead 'default' parameter default + throw
+patch("20i: deleteEntry no default namespace",
+    MI,
+    "export async function deleteEntry(options) {\n    const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
+    "export async function deleteEntry(options) {\n    const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('deleteEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
 
-patch("20g: hooks pattern-search description",
-    MCP_HOOKS,
-    "description: 'Namespace to search (default: pattern)'",
-    "description: 'Namespace to search (default: patterns)'")
+# ── Patch 21: Read Ops Namespace Enforcement (Problem C) ─────────────────
+# retrieve fell back to 'default', returning nothing when entries are in
+# 'patterns'. list had no 'all' support — truthiness check treated 'all'
+# as truthy → WHERE namespace = 'all' → 0 results.
+# retrieve = explicit namespace (targeted lookup, like store/delete).
+# list = read-only discovery (default 'all', like search).
 
-patch("20g: hooks pattern-search note",
-    MCP_HOOKS,
-    'namespace "pattern".',
-    'namespace "patterns".')
-
-# ── Patch 21: Enforce --namespace on read ops (retrieve + list) ──
-# Consistent with Patch 20: all memory ops require explicit namespace.
-# Prevents silent reads from wrong namespace returning false negatives.
-
-# 21a: MCP memory_retrieve — require namespace in schema + runtime check
-# NOTE: old/new includes 'Retrieve a value' to disambiguate from delete section
+# 21a: MCP retrieve — add 'namespace' to required + update description
+# NOTE: old_string includes 'Retrieve a value' to disambiguate from delete schema
 patch("21a: MCP retrieve require namespace",
     MCP_MEMORY,
     """        description: 'Retrieve a value from memory by key',
@@ -566,30 +602,32 @@ patch("21a: MCP retrieve require namespace",
             },
             required: ['key', 'namespace'],""")
 
-patch("21a: MCP retrieve namespace no fallback",
+# 21b: MCP retrieve — remove || 'default' fallback + add runtime throw
+patch("21b: MCP retrieve namespace no fallback",
     MCP_MEMORY,
     "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace || 'default';",
     "const { getEntry } = await getMemoryFunctions();\n            const key = input.key;\n            const namespace = input.namespace;\n            if (!namespace) {\n                throw new Error('Namespace is required. Use namespace: \"patterns\", \"solutions\", or \"tasks\"');\n            }")
 
-# 21b: MCP memory_list — update description + default to 'all' (read-only discovery, like search)
-# Per ADR-050: read-only discovery ops default to 'all'; write ops require explicit namespace.
-patch("21b: MCP list namespace description",
+# 21c: MCP list — update description to reflect 'all' default
+patch("21c: MCP list namespace description",
     MCP_MEMORY,
     "namespace: { type: 'string', description: 'Filter by namespace' },",
     "namespace: { type: 'string', description: 'Namespace to list (default: \"all\" = all namespaces)' },")
 
-patch("21b: MCP list namespace default all",
+# 21d: MCP list — default to 'all' (read-only discovery, like search)
+patch("21d: MCP list namespace default all",
     MCP_MEMORY,
     "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace;\n            const limit = input.limit || 50;",
     "const { listEntries } = await getMemoryFunctions();\n            const namespace = input.namespace || 'all';\n            const limit = input.limit || 50;")
 
-# 21c: CLI memory retrieve — remove default: 'default' + add namespace check
-patch("21c: CLI retrieve remove default",
+# 21e: CLI retrieve — remove default: 'default' from flag definition
+patch("21e: CLI retrieve remove default",
     CLI_MEMORY,
     "            type: 'string',\n            default: 'default'\n        }\n    ],\n    action: async (ctx) => {\n        const key = ctx.flags.key || ctx.args[0];\n        const namespace = ctx.flags.namespace;\n        if (!key) {\n            output.printError('Key is required');",
     "            type: 'string'\n        }\n    ],\n    action: async (ctx) => {\n        const key = ctx.flags.key || ctx.args[0];\n        const namespace = ctx.flags.namespace;\n        if (!key) {\n            output.printError('Key is required');")
 
-patch("21c: CLI retrieve namespace check",
+# 21f: CLI retrieve — add namespace-required check
+patch("21f: CLI retrieve namespace check",
     CLI_MEMORY,
     """        if (!key) {
             output.printError('Key is required');
@@ -606,74 +644,54 @@ patch("21c: CLI retrieve namespace check",
         }
         // Use sql.js directly for consistent data access""")
 
-# 21d: CLI memory list — default to 'all' (read-only discovery, like search)
-# Per ADR-050: read-only discovery ops default to 'all'; write ops require explicit namespace.
-patch("21d: CLI list namespace default all",
+# 21g: CLI list — default to 'all' (read-only discovery, like search)
+patch("21g: CLI list namespace default all",
     CLI_MEMORY,
     "        const namespace = ctx.flags.namespace;\n        const limit = ctx.flags.limit;\n        // Use sql.js directly for consistent data access",
     "        const namespace = ctx.flags.namespace || 'all';\n        const limit = ctx.flags.limit;\n        // Use sql.js directly for consistent data access")
 
-# ── Patch 22: searchEntries() default namespace = 'all' (ADR-050) ──
-# ADR-050 Intelligence Loop: "memory_search(query='task keywords') → Find similar patterns"
-# No namespace on search = broad discovery across all namespaces.
-# Fixes inconsistency: function defaulted to 'default' while CLI/MCP overrode to 'all'.
-# Now the source of truth is in the function itself.
-
-MI = memory + "/memory-initializer.js"
-EMB_TOOLS = base + "/mcp-tools/embeddings-tools.js"
-
-patch("22: searchEntries default all",
-    MI,
-    "const { query, namespace = 'default', limit = 10, threshold = 0.3, dbPath: customPath } = options;",
-    "const { query, namespace = 'all', limit = 10, threshold = 0.3, dbPath: customPath } = options;")
-
-# embeddings-tools.js search call passes namespace to searchEntries
-patch("22: embeddings search namespace all",
-    EMB_TOOLS,
-    "namespace: namespace || 'default'\n                });",
-    "namespace: namespace || 'all'\n                });")
-
-# embeddings-tools.js metadata display (2 occurrences)
-patch_all("22: embeddings metadata namespace all",
-    EMB_TOOLS,
-    "namespace: namespace || 'default',",
-    "namespace: namespace || 'all',")
-
-# ── Patch 23: Remove 'default' fallback from core functions ──
-# storeEntry, getEntry, deleteEntry had namespace='default' as function defaults.
-# With callers now throwing before reaching these, the defaults were dead code —
-# but a landmine for any new caller that skips validation. Remove and throw.
-
-patch("23: storeEntry no default namespace",
-    MI,
-    "const { key, value, namespace = 'default', generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;",
-    "const { key, value, namespace, generateEmbeddingFlag = true, tags = [], ttl, dbPath: customPath, upsert = false } = options;\n    if (!namespace) throw new Error('storeEntry: namespace is required');")
-
-patch("23: getEntry no default namespace",
+# 21h: Core getEntry() — remove dead 'default' parameter default + throw
+patch("21h: getEntry no default namespace",
     MI,
     "const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
     "const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('getEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
 
-patch("23: deleteEntry no default namespace",
-    MI,
-    "export async function deleteEntry(options) {\n    const { key, namespace = 'default', dbPath: customPath } = options;\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');",
-    "export async function deleteEntry(options) {\n    const { key, namespace, dbPath: customPath } = options;\n    if (!namespace) throw new Error('deleteEntry: namespace is required');\n    const swarmDir = path.join(process.cwd(), '.swarm');\n    const dbPath = customPath || path.join(swarmDir, 'memory.db');")
-
-# ── Patch 24: listEntries() 'all' namespace support ──
-# listEntries used truthiness (namespace ?) not !== 'all' check.
-# Passing 'all' would generate WHERE namespace = 'all' → returns nothing.
-# Fix: use nsFilter = namespace && namespace !== 'all' (same pattern as searchEntries).
-
-# Patch 24 uses line-based approach since template literals clash with Python heredoc
-patch("24a: listEntries nsFilter variable",
+# 21i: Core listEntries() — use nsFilter variable instead of truthiness check
+# Without this, passing 'all' generates WHERE namespace = 'all' → 0 results
+patch("21i: listEntries nsFilter variable",
     MI,
     "        // Get total count\n        const countQuery = namespace",
     "        // Get total count\n        const nsFilter = namespace && namespace !== 'all';\n        const countQuery = nsFilter")
 
-patch("24b: listEntries listQuery all support",
+# 21j: Core listEntries() — use nsFilter in list query too
+patch("21j: listEntries listQuery all support",
     MI,
     "        ${namespace ? `AND namespace",
     "        ${nsFilter ? `AND namespace")
+
+# ── Patch 22: Namespace Typo Fix (Problem D) ─────────────────────────────
+# hooks-tools.js used singular 'pattern' in 4 locations while every other
+# file (memory-tools.js, CLI, README) uses 'patterns' (plural).
+
+patch("22a: hooks pattern-store namespace",
+    MCP_HOOKS,
+    "namespace: 'pattern',",
+    "namespace: 'patterns',")
+
+patch("22b: hooks pattern-search default",
+    MCP_HOOKS,
+    "const namespace = params.namespace || 'pattern';",
+    "const namespace = params.namespace || 'patterns';")
+
+patch("22c: hooks pattern-search description",
+    MCP_HOOKS,
+    "description: 'Namespace to search (default: pattern)'",
+    "description: 'Namespace to search (default: patterns)'")
+
+patch("22d: hooks pattern-search note",
+    MCP_HOOKS,
+    'namespace "pattern".',
+    'namespace "patterns".')
 
 print(f"\n[PATCHES] Done: {applied} applied, {skipped} already present")
 PYEOF

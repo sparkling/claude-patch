@@ -12,13 +12,19 @@ fi
 
 VERSION=$(grep -o '"version":"[^"]*"' "$(dirname "$MEMORY")/../../package.json" 2>/dev/null | cut -d'"' -f4)
 COMMANDS_DIR=$(dirname "$SERVICES")/../commands
+MCP_TOOLS_DIR=$(dirname "$MEMORY")/../mcp-tools
 
-# Quick check: Patch 8 (config-driven) + Patch 5 (CPU load) + Patch 11 (preload) + Patch 13 (ultralearn) + Patch 18 (neural init)
+# Quick check: Patch 8 (config-driven) + Patch 5 (CPU load) + Patch 11 (preload) + Patch 12 (consolidate) + Patch 18 (neural init)
+# + Patch 19 (search 'all') + Patch 20 (store requires ns) + Patch 21 (nsFilter) + Patch 22 ('patterns' typo)
 if grep -q "embeddings.json" "$MEMORY" 2>/dev/null \
    && grep -q "maxCpuLoad:" "$SERVICES" 2>/dev/null \
    && grep -q "loadEmbeddingModel" "$SERVICES" 2>/dev/null \
    && grep -q "applyTemporalDecay" "$SERVICES" 2>/dev/null \
-   && grep -q "getHNSWIndex" "$COMMANDS_DIR/neural.js" 2>/dev/null; then
+   && grep -q "getHNSWIndex" "$COMMANDS_DIR/neural.js" 2>/dev/null \
+   && grep -q "all namespaces" "$MCP_TOOLS_DIR/memory-tools.js" 2>/dev/null \
+   && grep -q "Namespace is required" "$MCP_TOOLS_DIR/memory-tools.js" 2>/dev/null \
+   && grep -q "nsFilter" "$MEMORY" 2>/dev/null \
+   && grep -q "|| 'patterns'" "$MCP_TOOLS_DIR/hooks-tools.js" 2>/dev/null; then
   echo "[PATCHES] OK: All patches verified (v$VERSION)"
   exit 0
 fi
